@@ -159,3 +159,15 @@ class PrintingDataDigester(DataDigester):
 # Convenience function.
 def get_digest(msg):
     return DataDigester(msg).value
+
+if __name__=='__main__':
+    import sys
+    import email
+    if len(sys.argv)!=2:
+        print "python digest.py /path/to/message.eml"
+        sys.exit(1)
+        
+    print "Digesting:"
+    msg=email.message_from_file(open(sys.argv[1],'r'))
+    pdd=PrintingDataDigester(msg)
+    print "done. digest: ",pdd.value
