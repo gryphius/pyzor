@@ -253,7 +253,7 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
         This command returns the spam/ham counts for the specified digest.
         """
         self.server.log.debug("Request to check digest %s", digest)
-        if digest in self.server.staticwhitelist:
+        if digest in self.server.ignore_list:
             self.response["Count"]="0"
             self.response["WL-Count"]="0"
             return
