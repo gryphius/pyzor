@@ -43,6 +43,12 @@ class Server(SocketServer.UDPServer):
     max_packet_size = 8192
     time_diff_allowance = 180
 
+    #work around false postives caused by hash collisions if the digester strips too much away
+    ignore_list=[
+       "da39a3ee5e6b4b0d3255bfef95601890afd80709", # 'default' digest (result of hashlib.sha1('').hexdigest() ), all messages with empty/short bodies
+       "519a7ca7196db2ae93207ae766d0076f4dd60809", # no text, attached ZIP, digester only uses last line of base64 padding data
+    ]
+
     def __init__(self, address, database, passwd_fn, access_fn,
                  forwarder=None):
         if ":" in address[0]:
@@ -247,6 +253,10 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
         This command returns the spam/ham counts for the specified digest.
         """
         self.server.log.debug("Request to check digest %s", digest)
+        if digest in self.server.staticwhitelist:
+            self.response["Count"]="0"
+            self.response["WL-Count"]="0"
+            return
         self.response["Count"] = "%d" % record.r_count
         self.response["WL-Count"] = "%d" % record.wl_count
 
