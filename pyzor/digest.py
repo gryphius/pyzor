@@ -62,7 +62,7 @@ class DataDigester(object):
                         continue
 
         if len(lines) <= self.atomic_num_lines:
-            self.handle_atomic(lines)
+            self.alternate_digest(msg)
         else:
             self.handle_pieced(lines, spec)
 
@@ -70,6 +70,16 @@ class DataDigester(object):
 
         assert len(self.value) == len(hashlib.sha1(b"").hexdigest())
         assert self.value is not None
+
+    def alternate_digest(self,msg):
+        """for messages with little or no body information left after stripping we use a combination of Subject and unstripped body"""
+        self.digest.update(msg.get('Subject',''))
+        fullsource=msg.as_string()
+        try:
+            headers,body=re.split('(?:\n\n)|(?:\r\n\r\n)',fullsource,1)
+        except:
+            body=fullsource
+        self.digest.update(body)
 
     def handle_atomic(self, lines):
         """We digest everything."""
