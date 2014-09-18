@@ -5,3 +5,5 @@
 /pyzor.egg-info/
 /.project
 /.pydevproject
+/.idea
+/.settings

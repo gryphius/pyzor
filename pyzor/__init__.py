@@ -2,7 +2,7 @@
 
 __author__ = "Frank J. Tobin, ftobin@neverending.org"
 __credits__ = "Tony Meyer, Dreas von Donselaar, all the Pyzor contributors."
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import hashlib
 
@@ -22,17 +22,17 @@ MAX_TIMESTAMP_DIFFERENCE = 300  # seconds
 
 class CommError(Exception):
     """Something in general went wrong with the transaction."""
-    pass
+    code = 400
 
 
 class ProtocolError(CommError):
     """Something is wrong with talking the protocol."""
-    pass
+    code = 400
 
 
 class TimeoutError(CommError):
     """The connection timed out."""
-    pass
+    code = 504
 
 
 class IncompleteMessageError(ProtocolError):
@@ -55,6 +55,3 @@ class AuthorizationError(CommError):
     """The signature was valid, but the user is not permitted to do the
     requested action."""
     pass
-
-
-

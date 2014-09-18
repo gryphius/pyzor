@@ -1,4 +1,4 @@
-"""This modules contains the various messages used in the pyzor client server 
+"""This modules contains the various messages used in the pyzor client server
 communication.
 """
 
@@ -6,6 +6,7 @@ import random
 import email.message
 
 import pyzor
+
 
 class Message(email.message.Message):
     def __init__(self):
@@ -28,14 +29,14 @@ class Message(email.message.Message):
 
 class ThreadedMessage(Message):
     def init_for_sending(self):
-        if not self.has_key('Thread'):
+        if 'Thread' not in self:
             self.set_thread(ThreadId.generate())
-        assert self.has_key('Thread')
+        assert 'Thread' in self
         self["PV"] = str(pyzor.proto_version)
         Message.init_for_sending(self)
 
     def ensure_complete(self):
-        if not (self.has_key('PV') and self.has_key('Thread')):
+        if 'PV' not in self or 'Thread' not in self:
             raise pyzor.IncompleteMessageError("Doesn't have fields for a "
                                                "ThreadedMessage.")
         Message.ensure_complete(self)
@@ -54,7 +55,7 @@ class Response(ThreadedMessage):
     ok_code = 200
 
     def ensure_complete(self):
-        if not (self.has_key('Code') and self.has_key('Diag')):
+        if 'Code' not in self or 'Diag' not in self:
             raise pyzor.IncompleteMessageError("doesn't have fields for a "
                                                "Response")
         ThreadedMessage.ensure_complete(self)
@@ -81,7 +82,7 @@ class Request(ThreadedMessage):
         return self['Op']
 
     def ensure_complete(self):
-        if not self.has_key('Op'):
+        if 'Op' not in self:
             raise pyzor.IncompleteMessageError("doesn't have fields for a "
                                                "Request")
         ThreadedMessage.ensure_complete(self)
@@ -89,22 +90,30 @@ class Request(ThreadedMessage):
 
 class ClientSideRequest(Request):
     op = None
+
     def setup(self):
         Request.setup(self)
         self["Op"] = self.op
 
 
 class SimpleDigestBasedRequest(ClientSideRequest):
-    def __init__(self, digest):
+    def __init__(self, digest=None):
         ClientSideRequest.__init__(self)
-        self["Op-Digest"] = digest
+        self.digest_count = 0
+        if digest:
+            self.add_digest(digest)
+
+    def add_digest(self, digest):
+        self.add_header("Op-Digest", digest)
+        self.digest_count += 1
 
 
 class SimpleDigestSpecBasedRequest(SimpleDigestBasedRequest):
-    def __init__(self, digest, spec):
+    def __init__(self, digest=None, spec=None):
         SimpleDigestBasedRequest.__init__(self, digest)
-        flat_spec = [item for sublist in spec for item in sublist]
-        self["Op-Spec"] = ",".join(str(part) for part in flat_spec)
+        if spec:
+            flat_spec = [item for sublist in spec for item in sublist]
+            self["Op-Spec"] = ",".join(str(part) for part in flat_spec)
 
 
 class PingRequest(ClientSideRequest):
@@ -149,4 +158,3 @@ class ThreadId(int):
 
     def in_ok_range(self):
         return self.ok_range[0] <= self < self.ok_range[1]
-

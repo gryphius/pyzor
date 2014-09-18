@@ -5,10 +5,16 @@ import re
 import logging
 import collections
 
+try:
+    from raven.handlers.logging import SentryHandler
+    _has_raven = True
+except ImportError:
+    _has_raven = False
+
 import pyzor.account
 
-# Configuration files for the Pyzor Server
 
+# Configuration files for the Pyzor Server
 def load_access_file(access_fn, accounts):
     """Load the ACL from the specified file, if it exists, and return an
     ACL dictionary, where each key is a username and each value is a set
@@ -57,7 +63,7 @@ def load_access_file(access_fn, accounts):
             log.warn("Invalid ACL line: %r", line)
             continue
         try:
-            allowed = {"allow": True, "deny" : False}[allowed]
+            allowed = {"allow": True, "deny": False}[allowed]
         except KeyError:
             log.warn("Invalid ACL line: %r", line)
             continue
@@ -84,6 +90,7 @@ def load_access_file(access_fn, accounts):
                 acl[user].difference_update(operations)
     log.info("ACL: %r", acl)
     return acl
+
 
 def load_passwd_file(passwd_fn):
     """Load the accounts from the specified file.
@@ -116,8 +123,8 @@ def load_passwd_file(passwd_fn):
     log.info("Accounts: %s", ",".join(accounts))
     return accounts
 
-# Configuration files for the Pyzor Client
 
+# Configuration files for the Pyzor Client
 def load_accounts(filepath):
     """Layout of file is: host : port : username : salt,key"""
     accounts = {}
@@ -136,18 +143,21 @@ def load_accounts(filepath):
                 continue
             try:
                 port = int(port)
-            except ValueError, e:
-                log.warn("account file: invalid line %d: %s", lineno, e)
+            except ValueError as ex:
+                log.warn("account file: invalid line %d: %s", lineno, ex)
+                continue
             address = (host, port)
-            salt, key = pyzor.account.key_from_hexstr(key)
+            try:
+                salt, key = pyzor.account.key_from_hexstr(key)
+            except ValueError as ex:
+                log.warn("account file: invalid line %d: %s", lineno, ex)
+                continue
             if not salt and not key:
                 log.warn("account file: invalid line %d: keystuff can't be "
                          "all None's", lineno)
                 continue
-            try:
-                accounts[address] = pyzor.account.Account(username, salt, key)
-            except ValueError, e:
-                log.warn("account file: invalid line %d: %s", lineno, e)
+            accounts[address] = pyzor.account.Account(username, salt, key)
+
     else:
         log.warn("No accounts are setup.  All commands will be executed by "
                  "the anonymous user.")
@@ -161,8 +171,8 @@ def load_servers(filepath):
         servers = []
     else:
         servers = []
-        with open(filepath) as f:
-            for line in f:
+        with open(filepath) as serverf:
+            for line in serverf:
                 line = line.strip()
                 if re.match("[^#][a-zA-Z0-9.-]+:[0-9]+", line):
                     address, port = line.rsplit(":", 1)
@@ -173,16 +183,16 @@ def load_servers(filepath):
         servers = [("public.pyzor.org", 24441)]
     return servers
 
-# Common configurations
 
-def setup_logging(log_name, filepath, debug):
-    """Setup logging according to the specified options. Return the Logger 
+# Common configurations
+def setup_logging(log_name, filepath, debug, sentry_dsn=None,
+                  sentry_lvl="WARN"):
+    """Setup logging according to the specified options. Return the Logger
     object.
     """
     fmt = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
     stream_handler = logging.StreamHandler()
-    file_handler = None
 
     if debug:
         stream_log_level = logging.DEBUG
@@ -204,7 +214,14 @@ def setup_logging(log_name, filepath, debug):
         file_handler.setFormatter(fmt)
         logger.addHandler(file_handler)
 
+    if sentry_dsn and _has_raven:
+        sentry_level = getattr(logging, sentry_lvl)
+        sentry_handler = SentryHandler(sentry_dsn)
+        sentry_handler.setLevel(sentry_level)
+        logger.addHandler(sentry_handler)
+
     return logger
+
 
 def expand_homefiles(homefiles, category, homedir, config):
     """Set the full file path for these configuration files."""
@@ -216,5 +233,3 @@ def expand_homefiles(homefiles, category, homedir, config):
         if not os.path.isabs(filepath):
             filepath = os.path.join(homedir, filepath)
         config.set(category, filename, filepath)
-
-

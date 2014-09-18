@@ -1,9 +1,21 @@
+"""Handle digesting the messages."""
+
+from __future__ import print_function
+
 import re
 import hashlib
-import HTMLParser
+
+try:
+    import HTMLParser
+except ImportError:
+    import html.parser as HTMLParser
 
 # Hard-coded for the moment.
 digest_spec = ([(20, 3), (60, 3)])
+
+HASH = hashlib.sha1
+HASH_SIZE = len(HASH(b"").hexdigest())
+
 
 class HTMLStripper(HTMLParser.HTMLParser):
     """Strip all tags from the HTML."""
@@ -11,11 +23,24 @@ class HTMLStripper(HTMLParser.HTMLParser):
         HTMLParser.HTMLParser.__init__(self)
         self.reset()
         self.collector = collector
+        self.collect = True
+
     def handle_data(self, data):
         """Keep track of the data."""
         data = data.strip()
-        if data:
+        if data and self.collect:
             self.collector.append(data)
+
+    def handle_starttag(self, tag, attrs):
+        HTMLParser.HTMLParser.handle_starttag(self, tag, attrs)
+        if tag.lower() in ("script", "style"):
+            self.collect = False
+
+    def handle_endtag(self, tag):
+        HTMLParser.HTMLParser.handle_endtag(self, tag)
+        if tag.lower() in ("script", "style"):
+            self.collect = True
+
 
 class DataDigester(object):
     """The major workhouse class."""
@@ -46,9 +71,11 @@ class DataDigester(object):
     # Note that an empty string will always be used to remove whitespace.
     unwanted_txt_repl = ''
 
-    def __init__(self, msg, spec=digest_spec):
+    def __init__(self, msg, spec=None):
+        if spec is None:
+            spec = digest_spec
         self.value = None
-        self.digest = hashlib.sha1()
+        self.digest = HASH()
 
         # Need to know the total number of lines in the content.
         lines = []
@@ -68,8 +95,7 @@ class DataDigester(object):
 
         self.value = self.digest.hexdigest()
 
-        assert len(self.value) == len(hashlib.sha1(b"").hexdigest())
-        assert self.value is not None
+        assert len(self.value) == HASH_SIZE
 
     def handle_atomic(self, lines):
         """We digest everything."""
@@ -126,7 +152,7 @@ class DataDigester(object):
                 errors = "ignore"
                 if not charset:
                     charset = "ascii"
-                elif (charset.lower().replace("_", "-") in ("quopri-codec", 
+                elif (charset.lower().replace("_", "-") in ("quopri-codec",
                       "quopri", "quoted-printable", "quotedprintable")):
                     errors = "strict"
 
@@ -152,10 +178,5 @@ class DataDigester(object):
 class PrintingDataDigester(DataDigester):
     """Extends DataDigester: prints out what we're digesting."""
     def handle_line(self, line):
-        print line.decode("utf8")
+        print(line.decode("utf8"))
         super(PrintingDataDigester, self).handle_line(line)
-
-
-# Convenience function.
-def get_digest(msg):
-    return DataDigester(msg).value

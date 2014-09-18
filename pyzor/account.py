@@ -18,11 +18,12 @@ def sign_msg(hashed_key, timestamp, msg, hash_=hashlib.sha1):
     K is hashed_key
     H is the hash function (currently SHA1)
     """
-    M = msg.as_string().strip().encode("utf8")
+    msg = msg.as_string().strip().encode("utf8")
     digest = hash_()
-    digest.update(hash_(M).digest())
+    digest.update(hash_(msg).digest())
     digest.update((":%d:%s" % (timestamp, hashed_key)).encode("utf8"))
     return digest.hexdigest().lower()
+
 
 def hash_key(key, user, hash_=hashlib.sha1):
     """Returns the hash key for this username and password.
@@ -32,8 +33,9 @@ def hash_key(key, user, hash_=hashlib.sha1):
     U is username
     H is the hash function (currently SHA1)
     """
-    S = ("%s:%s" % (user, key.lower())).encode("utf8")
-    return hash_(S).hexdigest().lower()
+    result = ("%s:%s" % (user, key.lower())).encode("utf8")
+    return hash_(result).hexdigest().lower()
+
 
 def verify_signature(msg, user_key):
     """Verify that the provided message is correctly signed.
@@ -57,11 +59,13 @@ def verify_signature(msg, user_key):
     if correct_signature != provided_signature:
         raise pyzor.SignatureError("Invalid signature.")
 
+
 class Account(object):
     def __init__(self, username, salt, key):
         self.username = username
         self.salt = salt
         self.key = key
+
 
 def key_from_hexstr(s):
     try:

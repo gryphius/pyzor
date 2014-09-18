@@ -24,18 +24,24 @@ import time
 import socket
 import signal
 import logging
-import StringIO
 import threading
 import traceback
-import SocketServer
 import email.message
+
+try:
+    import SocketServer
+except ImportError:
+    import socketserver as SocketServer
 
 import pyzor.config
 import pyzor.account
 import pyzor.engines.common
 
 import pyzor.hacks.py26
+
+
 pyzor.hacks.py26.hack_all()
+
 
 class Server(SocketServer.UDPServer):
     """The pyzord server.  Handles incoming UDP connections in a single
@@ -58,10 +64,13 @@ class Server(SocketServer.UDPServer):
         self.log = logging.getLogger("pyzord")
         self.usage_log = logging.getLogger("pyzord-usage")
         self.database = database
+        self.one_step = getattr(self.database, "handles_one_step", False)
 
         # Handle configuration files
         self.passwd_fn = passwd_fn
         self.access_fn = access_fn
+        self.accounts = {}
+        self.acl = {}
         self.load_config()
 
         self.forwarder = forwarder
@@ -86,8 +95,8 @@ class Server(SocketServer.UDPServer):
         self.acl = pyzor.config.load_access_file(self.access_fn, self.accounts)
 
     def shutdown_handler(self, *args, **kwargs):
-        """Handler for the SIGTERM signal. This should be used to kill the 
-        daemon and ensure proper clean-up. 
+        """Handler for the SIGTERM signal. This should be used to kill the
+        daemon and ensure proper clean-up.
         """
         self.log.info("SIGTERM received. Shutting down.")
         t = threading.Thread(target=self.shutdown)
@@ -101,6 +110,10 @@ class Server(SocketServer.UDPServer):
         t = threading.Thread(target=self.load_config)
         t.start()
 
+    def handle_error(self, request, client_address):
+        self.log.error("Error while processing request from: %s",
+                       client_address, exc_info=True)
+
 
 class ThreadingServer(SocketServer.ThreadingMixIn, Server):
     """A threaded version of the pyzord server.  Each connection is served
@@ -109,9 +122,10 @@ class ThreadingServer(SocketServer.ThreadingMixIn, Server):
 
 
 class BoundedThreadingServer(ThreadingServer):
-    """Same as ThreadingServer but this also accepts a limited number of 
+    """Same as ThreadingServer but this also accepts a limited number of
     concurrent threads.
     """
+
     def __init__(self, address, database, passwd_fn, access_fn, max_threads,
                  forwarding_server=None):
         ThreadingServer.__init__(self, address, database, passwd_fn, access_fn,
@@ -128,9 +142,10 @@ class BoundedThreadingServer(ThreadingServer):
 
 
 class ProcessServer(SocketServer.ForkingMixIn, Server):
-    """A multi-processing version of the pyzord server.  Each connection is 
+    """A multi-processing version of the pyzord server.  Each connection is
     served in a new process. This may not be suitable for all database types.
     """
+
     def __init__(self, address, database, passwd_fn, access_fn,
                  max_children=40, forwarding_server=None):
         ProcessServer.max_children = max_children
@@ -152,22 +167,19 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
         self.response["PV"] = "%s" % pyzor.proto_version
         try:
             self._really_handle()
-        except NotImplementedError, e:
+        except NotImplementedError as e:
             self.handle_error(501, "Not implemented: %s" % e)
-        except pyzor.UnsupportedVersionError, e:
+        except pyzor.UnsupportedVersionError as e:
             self.handle_error(505, "Version Not Supported: %s" % e)
-        except pyzor.ProtocolError, e:
+        except pyzor.ProtocolError as e:
             self.handle_error(400, "Bad request: %s" % e)
-        except pyzor.SignatureError, e:
+        except pyzor.SignatureError as e:
             self.handle_error(401, "Unauthorized: Signature Error: %s" % e)
-        except pyzor.AuthorizationError, e:
+        except pyzor.AuthorizationError as e:
             self.handle_error(403, "Forbidden: %s" % e)
-        except Exception, e:
+        except Exception as e:
             self.handle_error(500, "Internal Server Error: %s" % e)
-            trace = StringIO.StringIO()
-            traceback.print_exc(file=trace)
-            trace.seek(0)
-            self.server.log.error(trace.read())
+            self.server.log.error(traceback.format_exc())
         self.server.log.debug("Sending: %r", self.response.as_string())
         self.wfile.write(self.response.as_string().encode("utf8"))
 
@@ -196,12 +208,17 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
                 raise pyzor.SignatureError("Unknown user.")
 
         if "PV" not in request:
-            raise pyzor.ProtocolError("Protocol Version not specified in request")
+            raise pyzor.ProtocolError("Protocol Version not specified in "
+                                      "request")
 
         # The protocol version is compatible if the major number is
         # identical (changes in the minor number are unimportant).
-        if int(float(request["PV"])) != int(pyzor.proto_version):
-            raise pyzor.UnsupportedVersionError()
+        try:
+            if int(float(request["PV"])) != int(pyzor.proto_version):
+                raise pyzor.UnsupportedVersionError()
+        except ValueError:
+            self.server.log.warn("Invalid PV: %s", request["PV"])
+            raise pyzor.ProtocolError("Invalid Protocol Version")
 
         # Check that the user has permission to execute the requested
         # operation.
@@ -211,7 +228,6 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
                 "User is not authorized to request the operation.")
         self.server.log.debug("Got a %s command from %s", opcode,
                               self.client_address[0])
-
         # Get a handle to the appropriate method to execute this operation.
         try:
             dispatch = self.dispatches[opcode]
@@ -220,16 +236,13 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
                                       "implemented.")
         # Get the existing record from the database (or a blank one if
         # there is no matching record).
-        digest = request["Op-Digest"]
+        digests = request.get_all("Op-Digest")
+
         # Do the requested operation, log what we have done, and return.
-        if dispatch:
-            try:
-                record = self.server.database[digest]
-            except KeyError:
-                record = pyzor.engines.common.Record()
-            dispatch(self, digest, record)
+        if dispatch and digests:
+            dispatch(self, digests)
         self.server.usage_log.info("%s,%s,%s,%r,%s", user,
-                                   self.client_address[0], opcode, digest,
+                                   self.client_address[0], opcode, digests,
                                    self.response["Code"])
 
     def handle_error(self, code, message):
@@ -238,20 +251,25 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
         self.response.replace_header("Code", "%d" % code)
         self.response.replace_header("Diag", message)
 
-    def handle_pong(self, digest, _):
+    def handle_pong(self, digests):
         """Handle the 'pong' command.
 
         This command returns maxint for report counts and 0 whitelist.
         """
-        self.server.log.debug("Request pong for %s", digest)
+        self.server.log.debug("Request pong for %s", digests[0])
         self.response["Count"] = "%d" % sys.maxint
         self.response["WL-Count"] = "%d" % 0
 
-    def handle_check(self, digest, record):
+    def handle_check(self, digests):
         """Handle the 'check' command.
 
         This command returns the spam/ham counts for the specified digest.
         """
+        digest = digests[0]
+        try:
+            record = self.server.database[digest]
+        except KeyError:
+            record = pyzor.engines.common.Record()
         self.server.log.debug("Request to check digest %s", digest)
         if digest in self.server.ignore_list:
             self.response["Count"]="0"
@@ -260,39 +278,59 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
         self.response["Count"] = "%d" % record.r_count
         self.response["WL-Count"] = "%d" % record.wl_count
 
-    def handle_report(self, digest, record):
-        """Handle the 'report' command.
+    def handle_report(self, digests):
+        """Handle the 'report' command in a single step.
 
-        This command increases the spam count for the specified digest."""
-        self.server.log.debug("Request to report digest %s", digest)
-        # Increase the count, and store the altered record back in the
-        # database.
-        record.r_increment()
-        self.server.database[digest] = record
+        This command increases the spam count for the specified digests."""
+        self.server.log.debug("Request to report digests %s", digests)
+        if self.server.one_step:
+            self.server.database.report(digests)
+        else:
+            for digest in digests:
+                try:
+                    record = self.server.database[digest]
+                except KeyError:
+                    record = pyzor.engines.common.Record()
+                record.r_increment()
+                self.server.database[digest] = record
         if self.server.forwarder:
-            self.server.forwarder.queue_forward_request(digest)
+            for digest in digests:
+                self.server.forwarder.queue_forward_request(digest)
 
-    def handle_whitelist(self, digest, record):
-        """Handle the 'whitelist' command.
+    def handle_whitelist(self, digests):
+        """Handle the 'whitelist' command in a single step.
 
-        This command increases the ham count for the specified digest."""
-        self.server.log.debug("Request to whitelist digest %s", digest)
-        # Increase the count, and store the altered record back in the
-        # database.
-        record.wl_increment()
-        self.server.database[digest] = record
+        This command increases the ham count for the specified digests."""
+        self.server.log.debug("Request to whitelist digests %s", digests)
+        if self.server.one_step:
+            self.server.database.whitelist(digests)
+        else:
+            for digest in digests:
+                try:
+                    record = self.server.database[digest]
+                except KeyError:
+                    record = pyzor.engines.common.Record()
+                record.wl_increment()
+                self.server.database[digest] = record
         if self.server.forwarder:
-            self.server.forwarder.queue_forward_request(digest, True)
+            for digest in digests:
+                self.server.forwarder.queue_forward_request(digest, True)
 
-    def handle_info(self, digest, record):
+    def handle_info(self, digests):
         """Handle the 'info' command.
 
         This command returns diagnostic data about a digest (timestamps for
         when the digest was first/last seen as spam/ham, and spam/ham
         counts).
         """
+        digest = digests[0]
+        try:
+            record = self.server.database[digest]
+        except KeyError:
+            record = pyzor.engines.common.Record()
         self.server.log.debug("Request for information about digest %s",
                               digest)
+
         def time_output(time_obj):
             """Convert a datetime object to a POSIX timestamp.
 
@@ -301,6 +339,7 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
             if not time_obj:
                 return 0
             return time.mktime(time_obj.timetuple())
+
         self.response["Entered"] = "%d" % time_output(record.r_entered)
         self.response["Updated"] = "%d" % time_output(record.r_updated)
         self.response["WL-Entered"] = "%d" % time_output(record.wl_entered)
@@ -309,11 +348,10 @@ class RequestHandler(SocketServer.DatagramRequestHandler):
         self.response["WL-Count"] = "%d" % record.wl_count
 
     dispatches = {
-        'ping' : None,
-        'pong' : handle_pong,
-        'info' : handle_info,
-        'check' : handle_check,
-        'report' : handle_report,
-        'whitelist' : handle_whitelist,
-        }
-
+        'ping': None,
+        'pong': handle_pong,
+        'info': handle_info,
+        'check': handle_check,
+        'report': handle_report,
+        'whitelist': handle_whitelist,
+    }

@@ -4,55 +4,73 @@ try:
     import gdbm as gdbm
     _has_gdbm = True
 except ImportError:
-    _has_gdbm = False
+    try:
+        import dbm.gnu as gdbm
+        _has_gdbm = True
+    except ImportError:
+        _has_gdbm = False
 
-import sys
 import time
 import logging
 import datetime
 import threading
 
-from pyzor.engines.common import *
+from pyzor.engines.common import Record, DBHandle
+
+
+def _dt_decode(datetime_str):
+    """Decode a string into a datetime object."""
+    if datetime_str == 'None':
+        return None
+    try:
+        return datetime.datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S.%f")
+    except ValueError:
+        return datetime.datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S")
+
 
 class GdbmDBHandle(object):
     absolute_source = True
+    handles_one_step = False
+
     sync_period = 60
     reorganize_period = 3600 * 24  # 1 day
-    _dt_decode = lambda x: None if x == 'None' else datetime.datetime.strptime(x, "%Y-%m-%d %H:%M:%S.%f")
-    fields = (
-        'r_count', 'r_entered', 'r_updated',
-        'wl_count', 'wl_entered', 'wl_updated',
-        )
+    fields = ('r_count', 'r_entered', 'r_updated',
+              'wl_count', 'wl_entered', 'wl_updated')
     _fields = [('r_count', int),
-                ('r_entered', _dt_decode),
-                ('r_updated', _dt_decode),
-                ('wl_count', int),
-                ('wl_entered', _dt_decode),
-                ('wl_updated', _dt_decode)]
+               ('r_entered', _dt_decode),
+               ('r_updated', _dt_decode),
+               ('wl_count', int),
+               ('wl_entered', _dt_decode),
+               ('wl_updated', _dt_decode)]
     this_version = '1'
     log = logging.getLogger("pyzord")
 
     def __init__(self, fn, mode, max_age=None):
         self.max_age = max_age
         self.db = gdbm.open(fn, mode)
+        self.reorganize_timer = None
+        self.sync_timer = None
         self.start_reorganizing()
         self.start_syncing()
 
     def __iter__(self):
         k = self.db.firstkey()
-        while k != None:
+        while k is not None:
             yield k
             k = self.db.nextkey(k)
-    
-    def iteritems(self):
+
+    def _iteritems(self):
         for k in self:
             try:
                 yield k, self._really_getitem(k)
             except Exception as e:
                 self.log.warning("Invalid record %s: %s", k, e)
-            
+
+    def iteritems(self):
+        return self._iteritems()
+
     def items(self):
-        return list(self.iteritems())
+        return list(self._iteritems())
 
     def apply_method(self, method, varargs=(), kwargs=None):
         if kwargs is None:
@@ -127,7 +145,6 @@ class GdbmDBHandle(object):
             raise StandardError("don't know how to handle db value %s" %
                                 repr(s))
         parts = s.split(',')
-        dispatch = None
         version = parts[0]
         if len(parts) == 3:
             dispatch = cls.decode_record_0
@@ -158,6 +175,7 @@ class GdbmDBHandle(object):
             setattr(r, f, decode(part))
         return r
 
+
 class ThreadedGdbmDBHandle(GdbmDBHandle):
     """Like GdbmDBHandle, but handles multi-threaded access."""
 
@@ -171,11 +189,12 @@ class ThreadedGdbmDBHandle(GdbmDBHandle):
         with self.db_lock:
             return GdbmDBHandle.apply_method(self, method, varargs=varargs,
                                              kwargs=kwargs)
+
 # This won't work because the gdbm object needs to be in shared memory of the
 # spawned processes.
 # class ProcessGdbmDBHandle(ThreadedGdbmDBHandle):
-#     def __init__(self, fn, mode, max_age=None, bound=None):
-#         ThreadedGdbmDBHandle.__init__(self, fn, mode, max_age=max_age,
+# def __init__(self, fn, mode, max_age=None, bound=None):
+# ThreadedGdbmDBHandle.__init__(self, fn, mode, max_age=max_age,
 #                                       bound=bound)
 #         self.db_lock = multiprocessing.Lock()
 
@@ -187,5 +206,3 @@ else:
     handle = DBHandle(single_threaded=GdbmDBHandle,
                       multi_threaded=ThreadedGdbmDBHandle,
                       multi_processing=None)
-
-

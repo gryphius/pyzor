@@ -37,8 +37,8 @@ To query the default server (public.pyzor.org):
 >>> client.whitelist(digest)
 >>> client.check(digest)
 
-Response will contain, depending on the type of request, some 
-of the following keys (e.g. client.ping()['Code']): 
+Response will contain, depending on the type of request, some
+of the following keys (e.g. client.ping()['Code']):
 
 All responses will have:
 - 'Diag' 'OK' or error message
@@ -54,28 +54,34 @@ All responses will have:
 - '[WL-]Updated' timestamp when message was last whitelisted/blacklisted
 """
 
-import sys
 import time
 import email
 import socket
 import logging
+import functools
+import collections
 
 import pyzor.digest
 import pyzor.account
 import pyzor.message
 
 import pyzor.hacks.py26
+
 pyzor.hacks.py26.hack_email()
+
 
 class Client(object):
     timeout = 5
     max_packet_size = 8192
 
-    def __init__(self, accounts=None, timeout=None):
-        if accounts:
-            self.accounts = accounts
-        else:
-            self.accounts = {}
+    def __init__(self, accounts=None, timeout=None, spec=None):
+        if accounts is None:
+            accounts = {}
+        self.accounts = dict(((host, int(port)), account)
+                             for (host, port), account in accounts.iteritems())
+        if spec is None:
+            spec = pyzor.digest.digest_spec
+        self.spec = spec
         if timeout is not None:
             self.timeout = timeout
         self.log = logging.getLogger("pyzor")
@@ -95,15 +101,13 @@ class Client(object):
         sock = self.send(msg, address)
         return self.read_response(sock, msg.get_thread())
 
-    def report(self, digest, address=("public.pyzor.org", 24441),
-               spec=pyzor.digest.digest_spec):
-        msg = pyzor.message.ReportRequest(digest, spec)
+    def report(self, digest, address=("public.pyzor.org", 24441)):
+        msg = pyzor.message.ReportRequest(digest, self.spec)
         sock = self.send(msg, address)
         return self.read_response(sock, msg.get_thread())
 
-    def whitelist(self, digest, address=("public.pyzor.org", 24441),
-                  spec=pyzor.digest.digest_spec):
-        msg = pyzor.message.WhitelistRequest(digest, spec)
+    def whitelist(self, digest, address=("public.pyzor.org", 24441)):
+        msg = pyzor.message.WhitelistRequest(digest, self.spec)
         sock = self.send(msg, address)
         return self.read_response(sock, msg.get_thread())
 
@@ -113,6 +117,7 @@ class Client(object):
         return self.read_response(sock, msg.get_thread())
 
     def send(self, msg, address=("public.pyzor.org", 24441)):
+        address = (address[0], int(address[1]))
         msg.init_for_sending()
         try:
             account = self.accounts[address]
@@ -126,7 +131,8 @@ class Client(object):
         self.log.debug("sending: %r", msg.as_string())
         return self._send(msg, address)
 
-    def _send(self, msg, addr):
+    @staticmethod
+    def _send(msg, addr):
         sock = None
         for res in socket.getaddrinfo(addr[0], addr[1], 0, socket.SOCK_DGRAM,
                                       socket.IPPROTO_UDP):
@@ -147,20 +153,20 @@ class Client(object):
                 continue
             break
         if sock is None:
-            raise pyzor.CommError("Unable to send to %s" % addr)
+            raise pyzor.CommError("Unable to send to %s:%s" % addr)
         return sock
 
     def read_response(self, sock, expected_id):
         sock.settimeout(self.timeout)
         try:
             packet, address = sock.recvfrom(self.max_packet_size)
-        except socket.timeout as e:
+        except socket.timeout as ex:
             sock.close()
             raise pyzor.TimeoutError("Reading response timed-out.")
-        except socket.error as e:
+        except socket.error as ex:
             sock.close()
-            raise pyzor.CommError("Socket error while reading response: %s"
-                                  % e)
+            raise pyzor.CommError("Socket error while reading response: %s" %
+                                  ex)
 
         self.log.debug("received: %r/%r", packet, address)
         msg = email.message_from_bytes(packet, _class=pyzor.message.Response)
@@ -179,13 +185,63 @@ class Client(object):
         return msg
 
 
-class ClientRunner(object):
-    __slots__ = ['routine', 'all_ok', 'log']
+class BatchClient(Client):
+    """Like the normal Client but with support for batching reports."""
 
+    def __init__(self, accounts=None, timeout=None, spec=None, batch_size=10):
+        Client.__init__(self, accounts=accounts, timeout=timeout, spec=spec)
+        self.batch_size = batch_size
+        self.r_requests = {}
+        self.w_requests = {}
+        self.flush()
+
+    def report(self, digest, address=("public.pyzor.org", 24441)):
+        self._add_digest(digest, address, self.r_requests)
+
+    def whitelist(self, digest, address=("public.pyzor.org", 24441)):
+        self._add_digest(digest, address, self.w_requests)
+
+    def _add_digest(self, digest, address, requests):
+        address = (address[0], int(address[1]))
+        msg = requests[address]
+
+        msg.add_digest(digest)
+        if msg.digest_count >= self.batch_size:
+            try:
+                return self.send(msg, address)
+            finally:
+                del requests[address]
+
+    def flush(self):
+        """Deleting any saved digest reports."""
+        self.r_requests = collections.defaultdict(
+            functools.partial(pyzor.message.ReportRequest, spec=self.spec))
+        self.w_requests = collections.defaultdict(
+            functools.partial(pyzor.message.WhitelistRequest, spec=self.spec))
+
+    def force(self):
+        """Force send any remaining reports."""
+        for address, msg in self.r_requests.iteritems():
+            try:
+                self.send(msg, address)
+            except:
+                continue
+        for address, msg in self.w_requests.iteritems():
+            try:
+                self.send(msg, address)
+            except:
+                continue
+
+    def __del__(self):
+        self.force()
+
+
+class ClientRunner(object):
     def __init__(self, routine):
         self.log = logging.getLogger("pyzor")
         self.routine = routine
         self.all_ok = True
+        self.results = []
 
     def run(self, server, args, kwargs=None):
         if kwargs is None:
@@ -195,7 +251,8 @@ class ClientRunner(object):
         try:
             response = self.routine(*args, **kwargs)
             self.handle_response(response, message)
-        except (pyzor.CommError, KeyError, ValueError), e:
+        except (pyzor.CommError, KeyError, ValueError) as e:
+            self.results.append("%s%s\n" % (message, (e.code, str(e))))
             self.log.error("%s\t%s: %s", server, e.__class__.__name__, e)
             self.all_ok = False
 
@@ -203,11 +260,10 @@ class ClientRunner(object):
         """mesaage is a string we've built up so far"""
         if not response.is_ok():
             self.all_ok = False
-        sys.stdout.write("%s%s\n" % (message, response.head_tuple()))
+        self.results.append("%s%s\n" % (message, response.head_tuple()))
 
 
 class CheckClientRunner(ClientRunner):
-
     def __init__(self, routine, r_count=0, wl_count=0):
         ClientRunner.__init__(self, routine)
         self.found_hit = False
@@ -227,29 +283,27 @@ class CheckClientRunner(ClientRunner):
             elif self.hit_count > self.r_count_found:
                 self.found_hit = True
             message += "%d\t%d" % (self.hit_count, self.whitelist_count)
-            sys.stdout.write(message + '\n')
         else:
             self.all_ok = False
-            sys.stdout.write(message + '\n')
+        self.results.append(message + "\n")
+
 
 class InfoClientRunner(ClientRunner):
-
     def handle_response(self, response, message):
         message += "%s\n" % str(response.head_tuple())
 
         if response.is_ok():
-            for f in ('Count', 'Entered', 'Updated',
-                      'WL-Count', 'WL-Entered', 'WL-Updated'):
-                if response.has_key(f):
-                    val = int(response[f])
-                    if 'Count' in f:
+            for key in ('Count', 'Entered', 'Updated', 'WL-Count',
+                        'WL-Entered', 'WL-Updated'):
+                if key in response:
+                    val = int(response[key])
+                    if 'Count' in key:
                         stringed = str(val)
                     elif val == -1:
                         stringed = 'Never'
                     else:
                         stringed = time.ctime(val)
-                    message += ("\t%s: %s\n" % (f, stringed))
-            sys.stdout.write(message + "\n")
+                    message += ("\t%s: %s\n" % (key, stringed))
         else:
             self.all_ok = False
-            sys.stdout.write(message + "\n")
+        self.results.append(message + "\n")
