@@ -167,12 +167,6 @@ class DataDigester(object):
                     yield cls.normalize_html_part(payload)
                 else:
                     yield payload
-            elif part.is_multipart():
-                # Skip, because walk() will give us the payload next.
-                pass
-            else:
-                # Non-text parts are passed through as-is.
-                yield part.get_payload()
 
 
 class PrintingDataDigester(DataDigester):
