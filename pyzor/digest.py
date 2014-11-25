@@ -84,7 +84,11 @@ class DataDigester(object):
                     except UnicodeError:
                         continue
 
-        if len(lines) <= self.atomic_num_lines:
+        # we don't have any usable lines - fall back to the subject header
+        if len(lines) == 0:
+            lines=[msg.get('Subject',''),]
+            self.handle_atomic(lines)
+        elif len(lines) <= self.atomic_num_lines:
             self.handle_atomic(lines)
         else:
             self.handle_pieced(lines, spec)
