@@ -67,10 +67,6 @@ class DataDigester(object):
 
     ws_ptrn = re.compile(r'\s')
 
-    # String that the above patterns will be replaced with.
-    # Note that an empty string will always be used to remove whitespace.
-    unwanted_txt_repl = ''
-
     def __init__(self, msg, spec=None):
         if spec is None:
             spec = digest_spec
@@ -118,10 +114,11 @@ class DataDigester(object):
 
     @classmethod
     def normalize(cls, s):
-        repl = cls.unwanted_txt_repl
-        s = cls.longstr_ptrn.sub(repl, s)
-        s = cls.email_ptrn.sub(repl, s)
-        s = cls.url_ptrn.sub(repl, s)
+        # replace dynamic content with static markers
+        # the static marker's length should be > self.min_line_length
+        s = cls.longstr_ptrn.sub('[LONG STRING]', s)
+        s = cls.email_ptrn.sub('[EMAIL ADDRESS]', s)
+        s = cls.url_ptrn.sub('[URL PATTERN]', s)
         # Make sure we do the whitespace last because some of the previous
         # patterns rely on whitespace.
         return cls.ws_ptrn.sub('', s).strip()
